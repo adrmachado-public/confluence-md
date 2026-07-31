@@ -31068,9 +31068,12 @@ async function uploadAttachments(client, pageId, images, attachmentsBase) {
                 // Read local file
                 const localPath = path.resolve(attachmentsBase, image.src);
                 (0, logger_1.getLogger)().debug(`Reading local image: ${localPath}`);
-                // Security check: ensure path is within attachmentsBase
+                // Security check: path must stay within attachmentsBase, or at
+                // least within the repository checkout root (allows
+                // Docusaurus-style ../../../static/... references).
                 const resolvedBase = path.resolve(attachmentsBase);
-                if (!localPath.startsWith(resolvedBase)) {
+                const allowedRoot = path.resolve(process.cwd());
+                if (!localPath.startsWith(resolvedBase) && !localPath.startsWith(allowedRoot)) {
                     throw new Error(`Path traversal detected: ${image.src}`);
                 }
                 if (!fs.existsSync(localPath)) {
@@ -31353,8 +31356,13 @@ const codeHandler = (node, state) => {
     const value = code.value || '';
     // Handle Mermaid diagrams. The macro name is configurable so it can match
     // whichever Mermaid app is installed in the target Confluence site.
+    // mermaid_macro: "code" opts into the plain Code Block macro with
+    // language=mermaid, for sites that render Mermaid natively (no app installed).
     if (lang.toLowerCase() === 'mermaid') {
         const macroName = ((_a = state === null || state === void 0 ? void 0 : state.context) === null || _a === void 0 ? void 0 : _a.mermaidMacro) || 'mermaid';
+        if (macroName === 'code') {
+            return (0, xml_1.createMacro)('code', { language: 'mermaid' }, value, 'plain-text');
+        }
         return (0, xml_1.createMacro)(macroName, undefined, value, 'plain-text');
     }
     // Regular code block with optional language parameter
