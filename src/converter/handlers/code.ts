@@ -16,8 +16,13 @@ export const codeHandler: NodeHandler = (node, state) => {
 
 	// Handle Mermaid diagrams. The macro name is configurable so it can match
 	// whichever Mermaid app is installed in the target Confluence site.
+	// mermaid_macro: "code" opts into the plain Code Block macro with
+	// language=mermaid, for sites that render Mermaid natively (no app installed).
 	if (lang.toLowerCase() === 'mermaid') {
 		const macroName = state?.context?.mermaidMacro || 'mermaid';
+		if (macroName === 'code') {
+			return createMacro('code', { language: 'mermaid' }, value, 'plain-text');
+		}
 		return createMacro(macroName, undefined, value, 'plain-text');
 	}
 
