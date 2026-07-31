@@ -145,9 +145,12 @@ export async function uploadAttachments(
 				const localPath = path.resolve(attachmentsBase, image.src);
 				getLogger().debug(`Reading local image: ${localPath}`);
 
-				// Security check: ensure path is within attachmentsBase
+				// Security check: path must stay within attachmentsBase, or at
+				// least within the repository checkout root (allows
+				// Docusaurus-style ../../../static/... references).
 				const resolvedBase = path.resolve(attachmentsBase);
-				if (!localPath.startsWith(resolvedBase)) {
+				const allowedRoot = path.resolve(process.cwd());
+				if (!localPath.startsWith(resolvedBase) && !localPath.startsWith(allowedRoot)) {
 					throw new Error(`Path traversal detected: ${image.src}`);
 				}
 
