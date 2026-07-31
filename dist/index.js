@@ -31347,25 +31347,16 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.codeHandler = void 0;
 const xml_1 = __nccwpck_require__(9053);
 /**
- * Handle code block nodes (including mermaid)
+ * Handle code block nodes.
+ *
+ * All fenced code (including ```mermaid) renders via the plain Code Block
+ * macro with a language parameter, since this fork targets Confluence sites
+ * that render Mermaid natively (no dedicated Mermaid app installed).
  */
-const codeHandler = (node, state) => {
-    var _a;
+const codeHandler = (node) => {
     const code = node;
     const lang = code.lang || '';
     const value = code.value || '';
-    // Handle Mermaid diagrams. The macro name is configurable so it can match
-    // whichever Mermaid app is installed in the target Confluence site.
-    // mermaid_macro: "code" opts into the plain Code Block macro with
-    // language=mermaid, for sites that render Mermaid natively (no app installed).
-    if (lang.toLowerCase() === 'mermaid') {
-        const macroName = ((_a = state === null || state === void 0 ? void 0 : state.context) === null || _a === void 0 ? void 0 : _a.mermaidMacro) || 'mermaid';
-        if (macroName === 'code') {
-            return (0, xml_1.createMacro)('code', { language: 'mermaid' }, value, 'plain-text');
-        }
-        return (0, xml_1.createMacro)(macroName, undefined, value, 'plain-text');
-    }
-    // Regular code block with optional language parameter
     const params = lang ? { language: lang } : undefined;
     return (0, xml_1.createMacro)('code', params, value, 'plain-text');
 };
