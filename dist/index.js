@@ -30975,6 +30975,7 @@ exports.uploadAttachments = uploadAttachments;
 const fs = __importStar(__nccwpck_require__(3024));
 const path = __importStar(__nccwpck_require__(6760));
 const http_client_1 = __nccwpck_require__(4844);
+const images_1 = __nccwpck_require__(4525);
 const logger_1 = __nccwpck_require__(6999);
 /**
  * MIME type mapping based on file extension
@@ -31035,17 +31036,13 @@ async function uploadAttachment(client, pageId, filename, content) {
     const mimeType = getMimeType(filename);
     // Use v1 API for attachments (v2 doesn't support multipart upload well)
     const existing = await findExistingAttachment(client, pageId, filename);
-    if (existing) {
-        (0, logger_1.getLogger)().info(`Updating existing attachment: ${filename}`);
-        const result = await client.postMultipart(`/wiki/rest/api/content/${pageId}/child/attachment/${existing.id}/data`, filename, content, mimeType);
-        const attachment = extractAttachment(result, filename);
-        (0, logger_1.getLogger)().debug(`Attachment updated: ${attachment.id}`);
-        return attachment;
-    }
-    (0, logger_1.getLogger)().info(`Uploading attachment: ${filename}`);
-    const result = await client.postMultipart(`/wiki/rest/api/content/${pageId}/child/attachment`, filename, content, mimeType);
+    const endpoint = existing
+        ? `/wiki/rest/api/content/${pageId}/child/attachment/${existing.id}/data`
+        : `/wiki/rest/api/content/${pageId}/child/attachment`;
+    (0, logger_1.getLogger)().info(existing ? `Updating existing attachment: ${filename}` : `Uploading attachment: ${filename}`);
+    const result = await client.postMultipart(endpoint, filename, content, mimeType);
     const attachment = extractAttachment(result, filename);
-    (0, logger_1.getLogger)().debug(`Attachment uploaded: ${attachment.id}`);
+    (0, logger_1.getLogger)().debug(`Attachment ${existing ? 'updated' : 'uploaded'}: ${attachment.id}`);
     return attachment;
 }
 /**
@@ -31065,14 +31062,9 @@ async function uploadAttachments(client, pageId, images, attachmentsBase) {
                 content = await downloadImage(image.src);
             }
             else {
-                // Read local file
-                const localPath = path.resolve(attachmentsBase, image.src);
+                // Read local file (throws on path traversal outside attachmentsBase)
+                const localPath = (0, images_1.resolveLocalImagePath)(image.src, attachmentsBase);
                 (0, logger_1.getLogger)().debug(`Reading local image: ${localPath}`);
-                // Security check: ensure path is within attachmentsBase
-                const resolvedBase = path.resolve(attachmentsBase);
-                if (!localPath.startsWith(resolvedBase)) {
-                    throw new Error(`Path traversal detected: ${image.src}`);
-                }
                 if (!fs.existsSync(localPath)) {
                     (0, logger_1.getLogger)().warning(`Image not found: ${localPath}`);
                     continue;
@@ -31136,27 +31128,33 @@ class ConfluenceClient {
      * Make a GET request
      */
     async get(path) {
-        const url = `${this.baseUrl}${path}`;
-        (0, logger_1.getLogger)().debug(`GET ${url}`);
-        const response = await this.http.get(url);
-        return this.handleResponse(response);
+        return this.requestJson('GET', path);
     }
     /**
      * Make a POST request with JSON body
      */
     async post(path, body) {
-        const url = `${this.baseUrl}${path}`;
-        (0, logger_1.getLogger)().debug(`POST ${url}`);
-        const response = await this.http.post(url, JSON.stringify(body));
-        return this.handleResponse(response);
+        return this.requestJson('POST', path, body);
     }
     /**
      * Make a PUT request with JSON body
      */
     async put(path, body) {
+        return this.requestJson('PUT', path, body);
+    }
+    async requestJson(method, path, body) {
         const url = `${this.baseUrl}${path}`;
-        (0, logger_1.getLogger)().debug(`PUT ${url}`);
-        const response = await this.http.put(url, JSON.stringify(body));
+        (0, logger_1.getLogger)().debug(`${method} ${url}`);
+        let response;
+        if (method === 'GET') {
+            response = await this.http.get(url);
+        }
+        else if (method === 'POST') {
+            response = await this.http.post(url, JSON.stringify(body));
+        }
+        else {
+            response = await this.http.put(url, JSON.stringify(body));
+        }
         return this.handleResponse(response);
     }
     /**
@@ -31344,20 +31342,16 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.codeHandler = void 0;
 const xml_1 = __nccwpck_require__(9053);
 /**
- * Handle code block nodes (including mermaid)
+ * Handle code block nodes.
+ *
+ * All fenced code (including ```mermaid) renders via the plain Code Block
+ * macro with a language parameter, since this fork targets Confluence sites
+ * that render Mermaid natively (no dedicated Mermaid app installed).
  */
-const codeHandler = (node, state) => {
-    var _a;
+const codeHandler = (node) => {
     const code = node;
     const lang = code.lang || '';
     const value = code.value || '';
-    // Handle Mermaid diagrams. The macro name is configurable so it can match
-    // whichever Mermaid app is installed in the target Confluence site.
-    if (lang.toLowerCase() === 'mermaid') {
-        const macroName = ((_a = state === null || state === void 0 ? void 0 : state.context) === null || _a === void 0 ? void 0 : _a.mermaidMacro) || 'mermaid';
-        return (0, xml_1.createMacro)(macroName, undefined, value, 'plain-text');
-    }
-    // Regular code block with optional language parameter
     const params = lang ? { language: lang } : undefined;
     return (0, xml_1.createMacro)('code', params, value, 'plain-text');
 };
@@ -31994,18 +31988,10 @@ const logger_1 = __nccwpck_require__(6999);
  * Priority: titleOverride > frontmatter title > first H1 > filename (without extension)
  */
 function resolveTitle(inputs, frontmatter, markdownContent) {
-    if (inputs.titleOverride) {
-        return inputs.titleOverride;
-    }
-    const fmTitle = (0, frontmatter_1.getTitleFromFrontmatter)(frontmatter);
-    if (fmTitle) {
-        return fmTitle;
-    }
-    const h1Title = (0, frontmatter_1.extractFirstH1)(markdownContent);
-    if (h1Title) {
-        return h1Title;
-    }
-    return path.basename(inputs.source, path.extname(inputs.source));
+    return (inputs.titleOverride ||
+        (0, frontmatter_1.getTitleFromFrontmatter)(frontmatter) ||
+        (0, frontmatter_1.extractFirstH1)(markdownContent) ||
+        path.basename(inputs.source, path.extname(inputs.source)));
 }
 async function uploadImagesIfAny(client, pageId, images, attachmentsBase) {
     if (images.length === 0)
@@ -32038,34 +32024,7 @@ async function runConversion(options) {
     const contentHash = crypto.createHash('sha256').update(storage).digest('hex').substring(0, 16);
     logger.info(`Content hash: ${contentHash}`);
     if (inputs.dryRun) {
-        logger.info('Dry run mode - skipping API calls.');
-        logger.info('Generated storage format:');
-        logger.info(storage);
-        const pageId = pageTarget.mode === 'update' ? pageTarget.pageId : 'NEW';
-        const created = pageTarget.mode === 'create';
-        const outputs = {
-            pageUrl: `${inputs.confluenceBaseUrl}/wiki/spaces/~/pages/${pageId}`,
-            pageId,
-            version: 0,
-            updated: false,
-            created,
-            attachmentsUploaded: 0,
-            contentHash,
-        };
-        logger.info('');
-        logger.info('=== Summary (Dry Run) ===');
-        logger.info(`Mode: ${pageTarget.mode}`);
-        logger.info(`Page ID: ${outputs.pageId}`);
-        logger.info(`Content hash: ${outputs.contentHash}`);
-        logger.info(`Images found: ${images.length}`);
-        if (created) {
-            logger.info(`Would create page in space: ${pageTarget.spaceKey}`);
-        }
-        return {
-            outputs,
-            storage,
-            imagesCount: images.length,
-        };
+        return runDryRun(inputs, pageTarget, storage, images.length, contentHash);
     }
     const client = new client_1.ConfluenceClient({
         baseUrl: inputs.confluenceBaseUrl,
@@ -32078,6 +32037,33 @@ async function runConversion(options) {
         return runCreateMode(ctx, frontmatter, markdownContent, pageTarget);
     }
     return runUpdateMode(ctx, pageTarget.pageId);
+}
+function runDryRun(inputs, pageTarget, storage, imagesCount, contentHash) {
+    const logger = (0, logger_1.getLogger)();
+    logger.info('Dry run mode - skipping API calls.');
+    logger.info('Generated storage format:');
+    logger.info(storage);
+    const pageId = pageTarget.mode === 'update' ? pageTarget.pageId : 'NEW';
+    const created = pageTarget.mode === 'create';
+    const outputs = {
+        pageUrl: `${inputs.confluenceBaseUrl}/wiki/spaces/~/pages/${pageId}`,
+        pageId,
+        version: 0,
+        updated: false,
+        created,
+        attachmentsUploaded: 0,
+        contentHash,
+    };
+    logger.info('');
+    logger.info('=== Summary (Dry Run) ===');
+    logger.info(`Mode: ${pageTarget.mode}`);
+    logger.info(`Page ID: ${outputs.pageId}`);
+    logger.info(`Content hash: ${outputs.contentHash}`);
+    logger.info(`Images found: ${imagesCount}`);
+    if (pageTarget.mode === 'create') {
+        logger.info(`Would create page in space: ${pageTarget.spaceKey}`);
+    }
+    return { outputs, storage, imagesCount };
 }
 async function runCreateMode(ctx, frontmatter, markdownContent, pageTarget) {
     const logger = (0, logger_1.getLogger)();
@@ -32200,7 +32186,7 @@ async function runSourceExecution(inputs) {
     if (stats.isFile()) {
         return {
             mode: 'single',
-            result: await runSingleSource(inputs, sourcePath),
+            result: await runFileConversion(inputs, sourcePath, { allowInputTargeting: true }),
         };
     }
     if (!stats.isDirectory()) {
@@ -32227,21 +32213,30 @@ function resolveMarkdownFiles(sourceDirectory, exclude = []) {
     filtered.sort((a, b) => a.displayPath.localeCompare(b.displayPath));
     return filtered;
 }
-async function runSingleSource(inputs, sourcePath) {
-    const markdown = fs.readFileSync(sourcePath, 'utf-8');
+/**
+ * Convert one Markdown file and update/create its Confluence page.
+ *
+ * `allowInputTargeting` controls whether the page_id/title_override inputs may
+ * target this file (true for single-file mode; false in directory mode, where
+ * each file must be targeted via its own frontmatter).
+ */
+async function runFileConversion(inputs, filePath, options) {
+    const markdown = fs.readFileSync(filePath, 'utf-8');
     const { data: frontmatter, content: markdownBody } = (0, frontmatter_1.extractFrontmatter)(markdown);
-    const resolvedInputs = createInputsForFile(inputs, sourcePath, frontmatter, {
-        allowTitleOverrideInput: true,
+    const resolvedInputs = createInputsForFile(inputs, filePath, frontmatter, {
+        allowTitleOverrideInput: options.allowInputTargeting,
     });
     const frontmatterPageId = (0, frontmatter_1.getPageIdFromFrontmatter)(frontmatter, resolvedInputs.frontmatterPageIdKey);
-    const pageTarget = (0, inputs_1.resolvePageTarget)(resolvedInputs, frontmatterPageId);
+    const pageTarget = (0, inputs_1.resolvePageTarget)(resolvedInputs, frontmatterPageId, {
+        allowInputFallback: options.allowInputTargeting,
+    });
     const result = await (0, core_1.runConversion)({
         inputs: resolvedInputs,
         markdownContent: markdownBody,
         frontmatter,
         pageTarget,
     });
-    maybeWriteBackPageId(result, resolvedInputs, sourcePath, markdown);
+    maybeWriteBackPageId(result, resolvedInputs, filePath, markdown, options.displayPath);
     return result;
 }
 async function runMultipleSources(inputs, files) {
@@ -32258,8 +32253,19 @@ async function runMultipleSources(inputs, files) {
     for (const file of files) {
         logger.info(`Processing ${file.displayPath}...`);
         try {
-            const result = await runSingleSourceForDirectory(inputs, file);
-            results.push(result);
+            const result = await runFileConversion(inputs, file.path, {
+                allowInputTargeting: false,
+                displayPath: file.displayPath,
+            });
+            results.push({
+                source: file.displayPath,
+                pageUrl: result.outputs.pageUrl,
+                pageId: result.outputs.pageId,
+                version: result.outputs.version,
+                updated: result.outputs.updated,
+                attachmentsUploaded: result.outputs.attachmentsUploaded,
+                contentHash: result.outputs.contentHash,
+            });
         }
         catch (error) {
             if (error instanceof inputs_1.PageIdNotFoundError) {
@@ -32291,33 +32297,6 @@ async function runMultipleSources(inputs, files) {
         results,
         failures,
         skipped,
-    };
-}
-async function runSingleSourceForDirectory(inputs, file) {
-    const markdown = fs.readFileSync(file.path, 'utf-8');
-    const { data: frontmatter, content: markdownBody } = (0, frontmatter_1.extractFrontmatter)(markdown);
-    const resolvedInputs = createInputsForFile(inputs, file.path, frontmatter, {
-        allowTitleOverrideInput: false,
-    });
-    const frontmatterPageId = (0, frontmatter_1.getPageIdFromFrontmatter)(frontmatter, resolvedInputs.frontmatterPageIdKey);
-    const pageTarget = (0, inputs_1.resolvePageTarget)(resolvedInputs, frontmatterPageId, {
-        allowInputFallback: false,
-    });
-    const result = await (0, core_1.runConversion)({
-        inputs: resolvedInputs,
-        markdownContent: markdownBody,
-        frontmatter,
-        pageTarget,
-    });
-    maybeWriteBackPageId(result, resolvedInputs, file.path, markdown, file.displayPath);
-    return {
-        source: file.displayPath,
-        pageUrl: result.outputs.pageUrl,
-        pageId: result.outputs.pageId,
-        version: result.outputs.version,
-        updated: result.outputs.updated,
-        attachmentsUploaded: result.outputs.attachmentsUploaded,
-        contentHash: result.outputs.contentHash,
     };
 }
 function maybeWriteBackPageId(result, inputs, filePath, markdown, displayPath) {
@@ -32449,6 +32428,107 @@ function writePageIdToFrontmatter(filePath, markdown, pageId, key) {
     data[key] = pageId;
     const updated = gray_matter_1.default.stringify(content, data);
     fs.writeFileSync(filePath, updated, 'utf-8');
+}
+
+
+/***/ }),
+
+/***/ 4525:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+/**
+ * Image handling utilities
+ */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.isRemoteUrl = exports.getImageExtension = void 0;
+exports.resolveLocalImagePath = resolveLocalImagePath;
+exports.localImageExists = localImageExists;
+exports.getImagesToUpload = getImagesToUpload;
+const fs = __importStar(__nccwpck_require__(3024));
+const path = __importStar(__nccwpck_require__(6760));
+var filename_1 = __nccwpck_require__(3052);
+Object.defineProperty(exports, "getImageExtension", ({ enumerable: true, get: function () { return filename_1.getImageExtension; } }));
+// Re-export from utils for backward compatibility
+var url_1 = __nccwpck_require__(5096);
+Object.defineProperty(exports, "isRemoteUrl", ({ enumerable: true, get: function () { return url_1.isRemoteUrl; } }));
+/**
+ * Resolve a local image path relative to the attachments base
+ */
+function resolveLocalImagePath(src, attachmentsBase) {
+    const localPath = path.resolve(attachmentsBase, src);
+    const resolvedBase = path.resolve(attachmentsBase);
+    const allowedRoot = path.resolve(process.cwd());
+    // Security: prevent path traversal outside attachmentsBase, or at least
+    // outside the repository checkout root (allows Docusaurus-style
+    // ../../../static/... references).
+    if (!localPath.startsWith(resolvedBase) && !localPath.startsWith(allowedRoot)) {
+        throw new Error(`Path traversal detected: ${src}`);
+    }
+    return localPath;
+}
+/**
+ * Check if a local image exists
+ */
+function localImageExists(src, attachmentsBase) {
+    try {
+        const localPath = resolveLocalImagePath(src, attachmentsBase);
+        return fs.existsSync(localPath);
+    }
+    catch {
+        return false;
+    }
+}
+/**
+ * Filter images that need to be uploaded as attachments
+ */
+function getImagesToUpload(images, imageMode, downloadRemoteImages) {
+    return images.filter((img) => {
+        // Skip images without attachment filename (external URLs)
+        if (!img.attachmentFilename) {
+            return false;
+        }
+        // Local images are always uploaded in 'upload' mode
+        if (!img.isRemote) {
+            return imageMode === 'upload';
+        }
+        // Remote images are only uploaded if downloadRemoteImages is enabled
+        return downloadRemoteImages;
+    });
 }
 
 
@@ -32726,6 +32806,18 @@ const core = __importStar(__nccwpck_require__(7484));
 const execution_1 = __nccwpck_require__(1633);
 const inputs_1 = __nccwpck_require__(8422);
 const logger_1 = __nccwpck_require__(6999);
+function setOutputs(values) {
+    for (const [name, value] of Object.entries(values)) {
+        core.setOutput(name, typeof value === 'string' ? value : value.toString());
+    }
+}
+function printSummary(entries) {
+    core.info('');
+    core.info('=== Summary ===');
+    for (const [label, value] of Object.entries(entries)) {
+        core.info(`${label}: ${value}`);
+    }
+}
 async function run() {
     try {
         // Initialize logger for GitHub Actions
@@ -32742,53 +32834,59 @@ async function run() {
         const execution = await (0, execution_1.runSourceExecution)(inputs);
         // Step 4: Set outputs
         if (execution.mode === 'single') {
-            core.setOutput('page_url', execution.result.outputs.pageUrl);
-            core.setOutput('page_id', execution.result.outputs.pageId);
-            core.setOutput('version', execution.result.outputs.version.toString());
-            core.setOutput('updated', execution.result.outputs.updated.toString());
-            core.setOutput('created', execution.result.outputs.created.toString());
-            core.setOutput('attachments_uploaded', execution.result.outputs.attachmentsUploaded.toString());
-            core.setOutput('content_hash', execution.result.outputs.contentHash);
+            const { outputs } = execution.result;
+            setOutputs({
+                page_url: outputs.pageUrl,
+                page_id: outputs.pageId,
+                version: outputs.version,
+                updated: outputs.updated,
+                created: outputs.created,
+                attachments_uploaded: outputs.attachmentsUploaded,
+                content_hash: outputs.contentHash,
+            });
             // Summary (only for non-dry-run, as dry-run prints its own summary)
             if (!inputs.dryRun) {
-                core.info('');
-                core.info('=== Summary ===');
-                core.info(`Page URL: ${execution.result.outputs.pageUrl}`);
-                core.info(`Page ID: ${execution.result.outputs.pageId}`);
-                core.info(`Version: ${execution.result.outputs.version}`);
-                core.info(`Updated: ${execution.result.outputs.updated}`);
-                core.info(`Created: ${execution.result.outputs.created}`);
-                core.info(`Attachments uploaded: ${execution.result.outputs.attachmentsUploaded}`);
-                core.info(`Content hash: ${execution.result.outputs.contentHash}`);
+                printSummary({
+                    'Page URL': outputs.pageUrl,
+                    'Page ID': outputs.pageId,
+                    Version: outputs.version,
+                    Updated: outputs.updated,
+                    Created: outputs.created,
+                    'Attachments uploaded': outputs.attachmentsUploaded,
+                    'Content hash': outputs.contentHash,
+                });
             }
             return;
         }
-        core.setOutput('page_url', '');
-        core.setOutput('page_id', '');
-        core.setOutput('version', '');
-        core.setOutput('updated', '');
-        core.setOutput('created', '');
-        core.setOutput('attachments_uploaded', '');
-        core.setOutput('content_hash', '');
-        core.setOutput('total_files', execution.result.summary.total.toString());
-        core.setOutput('succeeded_files', execution.result.summary.succeeded.toString());
-        core.setOutput('failed_files', execution.result.summary.failed.toString());
-        core.setOutput('updated_files', execution.result.summary.updated.toString());
-        core.setOutput('attachments_uploaded_total', execution.result.summary.attachmentsUploaded.toString());
-        core.setOutput('results_json', JSON.stringify(execution.result.results));
-        core.setOutput('failures_json', JSON.stringify(execution.result.failures));
-        core.setOutput('skipped_files', execution.result.summary.skipped.toString());
-        core.setOutput('skipped_json', JSON.stringify(execution.result.skipped));
-        core.info('');
-        core.info('=== Summary ===');
-        core.info(`Total files: ${execution.result.summary.total}`);
-        core.info(`Succeeded: ${execution.result.summary.succeeded}`);
-        core.info(`Failed: ${execution.result.summary.failed}`);
-        core.info(`Skipped: ${execution.result.summary.skipped}`);
-        core.info(`Updated: ${execution.result.summary.updated}`);
-        core.info(`Attachments uploaded: ${execution.result.summary.attachmentsUploaded}`);
-        if (execution.result.failures.length > 0) {
-            core.setFailed(`${execution.result.failures.length} file(s) failed during directory synchronization.`);
+        const { summary, results, failures, skipped } = execution.result;
+        setOutputs({
+            page_url: '',
+            page_id: '',
+            version: '',
+            updated: '',
+            created: '',
+            attachments_uploaded: '',
+            content_hash: '',
+            total_files: summary.total,
+            succeeded_files: summary.succeeded,
+            failed_files: summary.failed,
+            updated_files: summary.updated,
+            attachments_uploaded_total: summary.attachmentsUploaded,
+            results_json: JSON.stringify(results),
+            failures_json: JSON.stringify(failures),
+            skipped_files: summary.skipped,
+            skipped_json: JSON.stringify(skipped),
+        });
+        printSummary({
+            'Total files': summary.total,
+            Succeeded: summary.succeeded,
+            Failed: summary.failed,
+            Skipped: summary.skipped,
+            Updated: summary.updated,
+            'Attachments uploaded': summary.attachmentsUploaded,
+        });
+        if (failures.length > 0) {
+            core.setFailed(`${failures.length} file(s) failed during directory synchronization.`);
         }
     }
     catch (error) {

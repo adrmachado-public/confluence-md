@@ -16,9 +16,12 @@ export { isRemoteUrl } from './utils/url';
 export function resolveLocalImagePath(src: string, attachmentsBase: string): string {
 	const localPath = path.resolve(attachmentsBase, src);
 	const resolvedBase = path.resolve(attachmentsBase);
+	const allowedRoot = path.resolve(process.cwd());
 
-	// Security: prevent path traversal
-	if (!localPath.startsWith(resolvedBase)) {
+	// Security: prevent path traversal outside attachmentsBase, or at least
+	// outside the repository checkout root (allows Docusaurus-style
+	// ../../../static/... references).
+	if (!localPath.startsWith(resolvedBase) && !localPath.startsWith(allowedRoot)) {
 		throw new Error(`Path traversal detected: ${src}`);
 	}
 
